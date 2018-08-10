@@ -821,6 +821,7 @@ foreign import ccall unsafe "rdkafka.h &rd_kafka_topic_conf_destroy"
   {`RdKafkaTopicConfTPtr', `String', `String', id `CCharBufPointer', cIntConv `CSize'}
   -> `RdKafkaConfResT' cIntToEnum #}
 
+
 newRdKafkaTopicConfT :: IO RdKafkaTopicConfTPtr
 newRdKafkaTopicConfT = do
     ret <- rdKafkaTopicConfNew
@@ -984,6 +985,92 @@ newRdKafkaAdminOptions kafkaPtr op = do
 -- Common admin stuff
 data RdKafkaTopicResultT
 {#pointer *rd_kafka_topic_result_t as RdKafkaTopicResultTPtr foreign -> RdKafkaTopicResultT#}
+
+-- Topic config
+
+data RdKafkaConfigResourceT
+{#pointer *rd_kafka_ConfigResource_t as RdKafkaConfigResourceTPtr foreign -> RdKafkaConfigResourceT #}
+
+data RdKafkaDescribeConfigsResultT
+{#pointer *rd_kafka_DescribeConfigs_result_t as RdKafkaDescribeConfigsResultTPtr foreign -> RdKafkaDescribeConfigsResultT #}
+
+{#enum rd_kafka_ResourceType_t as ^ {underscoreToCase} deriving (Show, Eq) #}
+
+
+-- void rd_kafka_DescribeConfigs (rd_kafka_t *rk,
+--                                rd_kafka_ConfigResource_t **configs,
+--                                size_t config_cnt,
+--                                const rd_kafka_AdminOptions_t *options,
+--                                rd_kafka_queue_t *rkqu);
+
+-- RD_EXPORT rd_kafka_ConfigResource_t *
+-- rd_kafka_ConfigResource_new (rd_kafka_ResourceType_t restype,
+--                              const char *resname);
+{#fun rd_kafka_ConfigResource_new as ^
+    {`RdKafkaResourceTypeT', `String'} -> `RdKafkaConfigResourceTPtr' #}
+
+newRdKafkaNewConfigResource :: RdKafkaResourceTypeT -> String -> IO (Either String RdKafkaConfigResourceTPtr)
+newRdKafkaNewConfigResource rtype rname = do
+  ret <- rdKafkaConfigResourceNew rtype rname
+  withForeignPtr ret $ \realPtr -> do
+    if realPtr == nullPtr
+      then pure . Left $ "failed to create ConfigResource"
+      else pure (Right ret)
+      -- else addForeignPtrFinalizer rdKafkaNewTopicDestroy ret >> pure (Right ret)
+
+-- rdKafkaDescribeConfigs :: RdKafkaTPtr -> RdKafkaConfigResourceT
+
+-- RD_EXPORT const rd_kafka_ConfigResource_t **
+-- rd_kafka_DescribeConfigs_result_resources (
+--         const rd_kafka_DescribeConfigs_result_t *result,
+--         size_t *cntp);
+
+rdKafkaDescribeConfigs :: RdKafkaTPtr
+                       -> [RdKafkaConfigResourceTPtr]
+                       -> RdKafkaAdminOptionsTPtr
+                       -> RdKafkaQueueTPtr
+                       -> IO ()
+rdKafkaDescribeConfigs kafkaPtr configs opts queue =
+  withForeignPtr3 kafkaPtr opts queue $ \kPtr oPtr qPtr ->
+    withForeignPtrsArrayLen configs $ \tLen tPtr ->
+      {#call rd_kafka_DescribeConfigs#} kPtr tPtr (fromIntegral tLen) oPtr qPtr
+
+rdKafkaEventDescribeConfigsResult :: RdKafkaEventTPtr -> IO (Maybe RdKafkaDescribeConfigsResultTPtr)
+rdKafkaEventDescribeConfigsResult evtPtr =
+  withForeignPtr evtPtr $ \evtPtr' -> do
+    res <- {#call rd_kafka_event_DescribeConfigs_result#} (castPtr evtPtr')
+    if (res == nullPtr)
+      then do
+        print "null ptr!"
+        pure Nothing
+      else Just <$> newForeignPtr_ (castPtr res)
+
+rdKafkaDescribeConfigsResultResources :: RdKafkaDescribeConfigsResultTPtr
+                                      -> IO [Either (String, RdKafkaRespErrT, String) (RdKafkaResourceTypeT, String)]
+rdKafkaDescribeConfigsResultResources tRes =
+  withForeignPtr tRes $ \tRes' ->
+    alloca $ \sPtr -> do
+      res <- {#call rd_kafka_DescribeConfigs_result_resources#} (castPtr tRes') sPtr
+      size <- peekIntConv sPtr
+      putStrLn $ "size: " <> show size
+      arr <- peekArray size res
+      putStrLn $ "arr: " <> show arr
+      traverse unpackRdKafkaConfigResource arr
+
+-- | Unpacks raw result into
+-- 'Either (topicName, errorType, errorMsg) configResource'
+unpackRdKafkaConfigResource :: Ptr RdKafkaConfigResourceT
+                            -> IO (Either (String, RdKafkaRespErrT, String) (RdKafkaResourceTypeT, String))
+unpackRdKafkaConfigResource resPtr = do
+  rtype <- {#call rd_kafka_ConfigResource_type#} resPtr
+  rname <- {#call rd_kafka_ConfigResource_name#} resPtr >>= peekCString
+  err <- {#call rd_kafka_ConfigResource_error#} resPtr
+  putStrLn $ "err: " <> show err
+  case cIntToEnum err of
+    RdKafkaRespErrNoError -> pure $ Right (cIntToEnum rtype, rname)
+    respErr -> do
+      errMsg <- {#call rd_kafka_ConfigResource_error_string#} resPtr >>= peekCString
+      pure $ Left (rname, respErr, errMsg)
 
 -- Create topics
 
